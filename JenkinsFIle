@@ -1,0 +1,214 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_HUB_USER   = 'abdelilahxr'
+        DOCKER_CREDS_ID   = 'dockerhub-creds'
+        GITHUB_CREDS_ID   = 'git-cred'
+        
+        SONAR_SERVER_NAME = 'sonar-server' 
+        
+        BACKEND_SERVICES = "api-gateway,eureka-server,expedition-service,member-service,payment-service,security-service"
+        FRONTEND_DIR     = "frontend"
+    }
+
+    stages {
+        stage('Git Checkout') {
+            steps {
+                script {
+                    echo "=== Stage 1: Git Checkout ==="
+                    git branch: 'master', 
+                        credentialsId: GITHUB_CREDS_ID, 
+                        url: 'https://github.com/e-abdelilah/EeasyBus.git'
+                }
+            }
+        }
+
+        stage('Build') {
+            parallel {
+                stage('Backend Build') {
+                    tools {
+                        maven 'maven3'
+                        jdk 'jdk21'
+                    }
+                    steps {
+                        script {
+                            echo "=== Building Backend Services ==="
+                            def services = BACKEND_SERVICES.split(',')
+                            services.each { service ->
+                                dir("backend/${service}") {
+                                    echo "Building ${service}..."
+                                    sh "mvn clean package -DskipTests"
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Frontend Build') {
+                    tools {
+                        nodejs 'node24'
+                    }
+                    steps {
+                        dir(FRONTEND_DIR) {
+                            echo "=== Building Frontend ==="
+                            sh 'npm install'
+                            sh 'npm run build'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            parallel {
+                stage('Backend Analysis') {
+                    tools {
+                        maven 'maven3'
+                        jdk 'jdk21'
+                    }
+                    steps {
+                        script {
+                            echo "=== SonarQube Analysis: Backend ==="
+                            def services = BACKEND_SERVICES.split(',')
+                            services.each { service ->
+                                dir("backend/${service}") {
+                                    echo "Analyzing ${service}..."
+                                    withSonarQubeEnv(SONAR_SERVER_NAME) {
+                                        sh "mvn sonar:sonar -Dsonar.projectKey=easybus-${service} -DskipTests"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Frontend Analysis') {
+                    tools {
+                        nodejs 'node24'
+                    }
+                    steps {
+                        script {
+                            def scannerHome = tool 'sonar-scanner'
+                            
+                            dir(FRONTEND_DIR) {
+                                echo "=== SonarQube Analysis: Frontend ==="
+                                withSonarQubeEnv(SONAR_SERVER_NAME) {
+                                    sh """
+                                    ${scannerHome}/bin/sonar-scanner \
+                                    -Dsonar.projectKey=easybus-frontend \
+                                    -Dsonar.sources=src \
+                                    -Dsonar.exclusions=**/node_modules/**,**/dist/**
+                                    """
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate Check') {
+             steps {
+                 script {
+                     echo "=== Stage 4: Quality Gate Check ==="
+                     timeout(time: 10, unit: 'MINUTES') {
+                         waitForQualityGate abortPipeline: false
+                     }
+                 }
+             }
+        }
+
+        stage('OWASP Dependency-Check Scan') {
+            steps {
+                script {
+                    echo "=== Stage 5: OWASP Dependency-Check Scan ==="
+                    dependencyCheck additionalArguments: '--format HTML --format XML', 
+                                  odcInstallation: 'owasp-dependency-check', 
+                                  path: 'backend'
+                }
+            }
+        }
+
+        stage('Trivy File Scan') {
+            steps {
+                script {
+                    echo "=== Stage 6: Trivy File Scan ==="
+                    sh 'trivy fs --severity HIGH,CRITICAL --format table .'
+                }
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                script {
+                    echo "=== Stage 7: Docker Image Build ==="
+                    
+                    def services = BACKEND_SERVICES.split(',')
+                    services.each { service ->
+                        dir("backend/${service}") {
+                            echo "Building Docker image for ${service}..."
+                            sh "docker build -t ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER} ."
+                            sh "docker tag ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${service}:latest"
+                        }
+                    }
+                    
+                    dir(FRONTEND_DIR) {
+                        echo "Building Docker image for Frontend..."
+                        sh "docker build -t ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER} ."
+                        sh "docker tag ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER} ${DOCKER_HUB_USER}/easybus-frontend:latest"
+                    }
+                }
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                script {
+                    echo "=== Stage 8: Trivy Image Scan ==="
+                    
+                    def services = BACKEND_SERVICES.split(',')
+                    services.each { service ->
+                        echo "Scanning ${service} image..."
+                        sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER}"
+                    }
+                    
+                    echo "Scanning Frontend image..."
+                    sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER}"
+                }
+            }
+        }
+
+        stage('DockerHub Push') {
+            steps {
+                script {
+                    echo "=== Stage 9: DockerHub Push ==="
+                    
+                    docker.withRegistry('', DOCKER_CREDS_ID) {
+                        def services = BACKEND_SERVICES.split(',')
+                        services.each { service ->
+                            echo "Pushing ${service} to DockerHub..."
+                            sh "docker push ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER}"
+                            sh "docker push ${DOCKER_HUB_USER}/${service}:latest"
+                        }
+                        
+                        echo "Pushing Frontend to DockerHub..."
+                        sh "docker push ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER}"
+                        sh "docker push ${DOCKER_HUB_USER}/easybus-frontend:latest"
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+            dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed! Check the logs.'
+        }
+    }
+}
