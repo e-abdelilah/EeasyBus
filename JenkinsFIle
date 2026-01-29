@@ -10,6 +10,8 @@ pipeline {
         
         BACKEND_SERVICES = "api-gateway,eureka-server,expedition-service,member-service,payment-service,security-service"
         FRONTEND_DIR     = "frontend"
+        
+        VERSION = '1.0'
     }
 
     stages {
@@ -74,7 +76,7 @@ pipeline {
                                 dir("backend/${service}") {
                                     echo "Analyzing ${service}..."
                                     withSonarQubeEnv(SONAR_SERVER_NAME) {
-                                        sh "mvn sonar:sonar -Dsonar.projectKey=easybus-${service} -DskipTests"
+                                        sh "mvn org.sonarsource.scanner.maven:sonar-maven-plugin:3.11.0.3922:sonar -Dsonar.projectKey=easybus-${service} -DskipTests"
                                     }
                                 }
                             }
@@ -110,8 +112,8 @@ pipeline {
              steps {
                  script {
                      echo "=== Stage 4: Quality Gate Check ==="
-                     timeout(time: 10, unit: 'MINUTES') {
-                         waitForQualityGate abortPipeline: false
+                     timeout(time: 5, unit: 'MINUTES') {
+                         waitForQualityGate abortPipeline: true
                      }
                  }
              }
@@ -123,7 +125,7 @@ pipeline {
                     echo "=== Stage 5: OWASP Dependency-Check Scan ==="
                     dependencyCheck additionalArguments: '--format HTML --format XML', 
                                   odcInstallation: 'owasp-dependency-check', 
-                                  path: 'backend'
+                                  scanpath: 'backend'
                 }
             }
         }
@@ -146,15 +148,15 @@ pipeline {
                     services.each { service ->
                         dir("backend/${service}") {
                             echo "Building Docker image for ${service}..."
-                            sh "docker build -t ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER} ."
-                            sh "docker tag ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${service}:latest"
+                            sh "docker build -t ${DOCKER_HUB_USER}/${service}:${VERSION} ."
+                            sh "docker tag ${DOCKER_HUB_USER}/${service}:${VERSION} ${DOCKER_HUB_USER}/${service}:latest"
                         }
                     }
                     
                     dir(FRONTEND_DIR) {
                         echo "Building Docker image for Frontend..."
-                        sh "docker build -t ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER} ."
-                        sh "docker tag ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER} ${DOCKER_HUB_USER}/easybus-frontend:latest"
+                        sh "docker build -t ${DOCKER_HUB_USER}/easybus-frontend:${VERSION} -f DockerFile ."
+                        sh "docker tag ${DOCKER_HUB_USER}/easybus-frontend:${VERSION} ${DOCKER_HUB_USER}/easybus-frontend:latest"
                     }
                 }
             }
@@ -168,11 +170,11 @@ pipeline {
                     def services = BACKEND_SERVICES.split(',')
                     services.each { service ->
                         echo "Scanning ${service} image..."
-                        sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER}"
+                        sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/${service}:${VERSION}"
                     }
                     
                     echo "Scanning Frontend image..."
-                    sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER}"
+                    sh "trivy image --severity HIGH,CRITICAL --format table ${DOCKER_HUB_USER}/easybus-frontend:${VERSION}"
                 }
             }
         }
@@ -186,12 +188,12 @@ pipeline {
                         def services = BACKEND_SERVICES.split(',')
                         services.each { service ->
                             echo "Pushing ${service} to DockerHub..."
-                            sh "docker push ${DOCKER_HUB_USER}/${service}:${BUILD_NUMBER}"
+                            sh "docker push ${DOCKER_HUB_USER}/${service}:${VERSION}"
                             sh "docker push ${DOCKER_HUB_USER}/${service}:latest"
                         }
                         
                         echo "Pushing Frontend to DockerHub..."
-                        sh "docker push ${DOCKER_HUB_USER}/easybus-frontend:${BUILD_NUMBER}"
+                        sh "docker push ${DOCKER_HUB_USER}/easybus-frontend:${VERSION}"
                         sh "docker push ${DOCKER_HUB_USER}/easybus-frontend:latest"
                     }
                 }
@@ -201,8 +203,8 @@ pipeline {
 
     post {
         always {
-            cleanWs()
             dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            cleanWs()
         }
         success {
             echo 'Pipeline completed successfully!'
