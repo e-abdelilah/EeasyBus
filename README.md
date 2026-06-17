@@ -1,7 +1,5 @@
 # Automated DevSecOps Pipeline with GitOps & Kubernetes for EasyBus, a bus ticket management platform.
 
-> Automated DevSecOps Pipeline with GitOps & Kubernetes for EasyBus, a bus ticket management platform.
-
 <p>
   <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
   <img src="https://img.shields.io/badge/Kubernetes-326CE5?style=for-the-badge&logo=kubernetes&logoColor=white" alt="Kubernetes" />
